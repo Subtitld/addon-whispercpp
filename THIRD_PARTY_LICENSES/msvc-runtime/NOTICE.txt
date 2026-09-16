@@ -1,0 +1,12 @@
+Microsoft Visual C++ runtime — Windows builds only
+
+The pywhispercpp win_amd64 wheel vendors (via delvewheel) renamed copies of
+msvcp140.dll and vcomp140.dll (the C++ standard library and the OpenMP
+runtime). whisper.cpp needs both; without vcomp140 the extension fails with
+"DLL load failed while importing _pywhispercpp" on machines that lack the
+Visual C++ Redistributable.
+
+These files are Microsoft "Distributable Code" under the Microsoft Visual
+Studio licence terms, which permit redistributing them unmodified as part of
+an application. See:
+https://learn.microsoft.com/visualstudio/releases/2022/redistribution

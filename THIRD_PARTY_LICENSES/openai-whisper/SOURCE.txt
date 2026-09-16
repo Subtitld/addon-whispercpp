@@ -1,0 +1,8 @@
+OpenAI Whisper model weights
+Licence: MIT (see LICENSE, fetched from openai/whisper tag v20250625)
+Upstream: https://github.com/openai/whisper
+
+The GGML model files are NOT inside this archive. They download on first use
+from https://huggingface.co/ggerganov/whisper.cpp, whose model card declares
+`license: mit`; they are conversions of the OpenAI Whisper weights, which are
+released under the licence in this directory.

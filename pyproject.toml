@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subtitld-addon-whispercpp"
+version = "0.0.1"
+description = "Subtitld add-on: offline speech-to-text with whisper.cpp"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Subtitld", email = "jbopen@gmail.com" }]
+requires-python = ">=3.10"
+
+# pywhispercpp is pinned EXACTLY. The add-on reaches into two things that are
+# not stable API across releases: the mangled names of the bundled native
+# libraries (pyinstaller.spec collects them by directory, but the in-archive
+# check and the licence notes name the whisper.cpp version), and the shape of
+# `Model` (`_ctx`, `_params`) that the explicit free-on-exit relies on.
+# 1.5.1 bundles whisper.cpp 1.8.5 / ggml 0.13.1 and supports abort_callback.
+# numpy, requests, tqdm and platformdirs come in as its hard dependencies.
+dependencies = [
+    "pywhispercpp==1.5.1",
+    "platformdirs>=3",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.10"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+whispercpp-addon = "whispercpp_addon.__main__:main"
+
+[tool.setuptools]
+packages = ["whispercpp_addon"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

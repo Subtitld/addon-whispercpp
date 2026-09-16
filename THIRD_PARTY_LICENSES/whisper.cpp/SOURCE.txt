@@ -1,0 +1,8 @@
+whisper.cpp 1.8.5 (with ggml 0.13.1)
+Licence: MIT (see LICENSE, fetched from the v1.8.5 tag)
+Upstream: https://github.com/ggml-org/whisper.cpp
+Tag:      v1.8.5
+
+Redistributed as the native libraries inside the pywhispercpp 1.5.1 wheel:
+libwhisper, libggml, libggml-base, libggml-cpu (plus libggml-metal and
+libggml-blas on macOS). This add-on does not modify or rebuild them.
