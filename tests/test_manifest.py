@@ -169,10 +169,14 @@ def test_static_third_party_licences_are_present():
     root = REPO_ROOT / 'THIRD_PARTY_LICENSES'
     for rel in ('whisper.cpp/LICENSE', 'openai-whisper/LICENSE',
                 'gcc-runtime/COPYING3', 'gcc-runtime/COPYING.RUNTIME',
+                'pybind11/LICENSE', 'pybind11/SOURCE.txt',
                 'msvc-runtime/NOTICE.txt', 'python-runtime-libs/NOTICE.txt',
                 'python-runtime-libs/openssl-LICENSE.txt'):
         assert (root / rel).is_file(), rel
     assert 'MIT License' in (root / 'whisper.cpp' / 'LICENSE').read_text(encoding='utf-8')
+    pybind11 = (root / 'pybind11' / 'LICENSE').read_text(encoding='utf-8')
+    assert 'Copyright (c) 2016 Wenzel Jakob' in pybind11
+    assert 'Redistributions in binary form must reproduce' in pybind11
 
 
 def test_frozen_download_step_hides_the_runner_certificates():

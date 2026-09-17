@@ -1,0 +1,10 @@
+pybind11 3.0.0.dev1 (commit b70b8eb332fadf55d7e22b492da0e954c1a4fcb7)
+Licence: BSD-3-Clause (see LICENSE, identical in the pywhispercpp 1.5.1 sdist
+and at that commit)
+Upstream: https://github.com/pybind/pybind11
+
+pywhispercpp 1.5.1 vendors pybind11 as a git submodule and builds its
+extension module with it (`pybind11_add_module(_pywhispercpp ...)`).
+pybind11 is header-only, so its code is compiled into
+bin/_internal/_pywhispercpp.* on every platform. No separate pybind11 file
+ships.

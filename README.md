@@ -184,6 +184,7 @@ transcription, not at build time.
 ## Licence
 
 The add-on code is Apache-2.0 (see [LICENSE](LICENSE)). whisper.cpp and
-pywhispercpp are MIT. Release archives include `THIRD_PARTY_LICENSES/`,
-which covers everything frozen into the binary: numpy with OpenBLAS, the
+pywhispercpp are MIT; pybind11, compiled into pywhispercpp's extension, is
+BSD-3-Clause. Release archives include `THIRD_PARTY_LICENSES/`, which
+covers everything frozen into the binary: numpy with OpenBLAS, pybind11, the
 Python runtime, the GCC runtime on Linux and the MSVC runtime on Windows.

@@ -243,6 +243,7 @@ jobs:
                       manifest['executable'],
                       'THIRD_PARTY_LICENSES/README.md',
                       'THIRD_PARTY_LICENSES/whisper.cpp/LICENSE',
+                      'THIRD_PARTY_LICENSES/pybind11/LICENSE',
                       'THIRD_PARTY_LICENSES/openai-whisper/LICENSE',
                       'THIRD_PARTY_LICENSES/python-runtime-libs/openssl-LICENSE.txt']
           problems += [f'missing {r}' for r in required if r not in names]

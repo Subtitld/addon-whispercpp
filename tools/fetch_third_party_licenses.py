@@ -47,10 +47,14 @@ STATIC_DIR = REPO_ROOT / 'THIRD_PARTY_LICENSES'
 ROOTS = ('pywhispercpp', 'platformdirs')
 
 WHISPER_CPP_TAG = 'v1.8.5'  # the version inside pywhispercpp 1.5.1
+# pywhispercpp v1.5.1's pybind11 submodule (3.0.0.dev1).
+PYBIND11_COMMIT = 'b70b8eb332fadf55d7e22b492da0e954c1a4fcb7'
 OPENAI_WHISPER_TAG = 'v20250625'
 _REFRESH = {
     'whisper.cpp/LICENSE':
         f'https://raw.githubusercontent.com/ggml-org/whisper.cpp/{WHISPER_CPP_TAG}/LICENSE',
+    'pybind11/LICENSE':
+        f'https://raw.githubusercontent.com/pybind/pybind11/{PYBIND11_COMMIT}/LICENSE',
     'openai-whisper/LICENSE':
         f'https://raw.githubusercontent.com/openai/whisper/{OPENAI_WHISPER_TAG}/LICENSE',
     'gcc-runtime/COPYING3':
@@ -268,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
 
     present = {str(p.relative_to(out)).replace('\\', '/') for p in out.rglob('*') if p.is_file()}
     required = [r'^pywhispercpp-[^/]+/LICENSE$', r'^numpy-[^/]+/LICENSE\.txt$',
-                r'^whisper\.cpp/LICENSE$', r'^openai-whisper/LICENSE$',
+                r'^whisper\.cpp/LICENSE$', r'^pybind11/LICENSE$', r'^openai-whisper/LICENSE$',
                 r'^python-[^/]+/LICENSE\.txt$', r'^python-runtime-libs/openssl-LICENSE\.txt$',
                 r'^README\.md$']
     if _platform_key() == 'linux':
