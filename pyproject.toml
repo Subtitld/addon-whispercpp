@@ -17,10 +17,13 @@ requires-python = ">=3.10"
 # check and the licence notes name the whisper.cpp version), and the shape of
 # `Model` (`_ctx`, `_params`) that the explicit free-on-exit relies on.
 # 1.5.1 bundles whisper.cpp 1.8.5 / ggml 0.13.1 and supports abort_callback.
-# numpy, requests, tqdm and platformdirs come in as its hard dependencies.
+# numpy, requests and tqdm come in as its hard dependencies. certifi is
+# imported directly: the model download trusts its CA bundle on top of the
+# system store (the frozen build's OpenSSL cannot find the user's store).
 dependencies = [
     "pywhispercpp==1.5.1",
     "platformdirs>=3",
+    "certifi",
 ]
 
 [project.optional-dependencies]

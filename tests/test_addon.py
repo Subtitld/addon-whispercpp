@@ -23,6 +23,11 @@ CI does; it is the only thing that exercises native-library collection.
 tests/data/jfk.flac is whisper.cpp's samples/jfk.wav (tag v1.8.5), FLAC-encoded:
 11 s of President Kennedy's 1961 inaugural address, a US federal government
 work in the public domain.
+
+tests/data/tls/ holds a throwaway test CA certificate and a 127.0.0.1 server
+certificate + key it signed (valid to 2126), used only by the local HTTPS
+download server below. The CA's private key was discarded; nothing else
+trusts these.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from whispercpp_addon import __main__ as addon  # noqa: E402
 
 MANIFEST = json.loads((REPO_ROOT / 'manifest.json').read_text(encoding='utf-8'))
 JFK = REPO_ROOT / 'tests' / 'data' / 'jfk.flac'
+TLS_DIR = REPO_ROOT / 'tests' / 'data' / 'tls'
 BINARY = os.environ.get('WHISPERCPP_TEST_BINARY') or None
 FFMPEG = shutil.which('ffmpeg')
 
@@ -452,6 +458,40 @@ def test_dropped_connections_are_retryable_network_errors(exc):
     assert 'internet connection' in message
 
 
+def test_certificate_failure_is_not_blamed_on_the_connection():
+    cert = ssl.SSLCertVerificationError(
+        1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: '
+           'unable to get local issuer certificate (_ssl.c:1016)')
+    cert.verify_message = 'unable to get local issuer certificate'
+    for exc in (cert, urllib.error.URLError(cert)):
+        code, message, retryable = addon._classify(exc)
+        assert code == addon.ERR_NETWORK_UNAVAILABLE
+        assert retryable is False
+        assert 'certificate' in message and 'unable to get local issuer' in message
+        assert 'internet connection' not in message
+
+
+def test_download_tls_trusts_certifi_without_any_system_store(clean_env, tmp_path):
+    """The frozen build's OpenSSL looks for CAs where the BUILD machine keeps
+    them. With SSL_CERT_FILE/DIR pointing nowhere, the default store is empty,
+    exactly like a Flatpak runtime or a stock Mac, and certifi must fill it."""
+    clean_env.setenv('SSL_CERT_FILE', str(tmp_path / 'no-such-ca.pem'))
+    clean_env.setenv('SSL_CERT_DIR', str(tmp_path / 'no-such-ca-dir'))
+    ctx = addon._download_ssl_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    assert ctx.cert_store_stats()['x509_ca'] > 100
+
+
+def test_download_tls_keeps_the_system_store(clean_env):
+    """`create_default_context(cafile=certifi)` would drop the system store,
+    and with it a corporate CA. SSL_CERT_FILE stands in for that store."""
+    clean_env.setenv('SSL_CERT_FILE', str(TLS_DIR / 'ca.pem'))
+    subjects = [dict(item[0] for item in cert['subject'])
+                for cert in addon._download_ssl_context().get_ca_certs()]
+    assert {'commonName': 'whispercpp-addon test CA'} in subjects
+    assert len(subjects) > 100, 'certifi missing'
+
+
 def test_child_env_restores_the_host_library_path(monkeypatch):
     monkeypatch.setattr(addon.sys, 'frozen', True, raising=False)
     monkeypatch.setattr(addon.sys, 'platform', 'linux')
@@ -670,11 +710,12 @@ class _ModelServer:
 
     body: 'length' sends Content-Length; 'close' sends none and ends the body
     by closing the connection; 'chunked' uses chunked transfer encoding.
-    `cut_at` drops the connection after that many body bytes.
+    `cut_at` drops the connection after that many body bytes. `tls` serves
+    HTTPS with tests/data/tls/server.pem.
     """
 
     def __init__(self, files: dict[str, bytes], delay: float = 0.0, chunk: int = 65536,
-                 body: str = 'length', cut_at: int | None = None):
+                 body: str = 'length', cut_at: int | None = None, tls: bool = False):
         outer = self
         self.files = files
         self.hits: list[str] = []
@@ -721,7 +762,13 @@ class _ModelServer:
 
         self.httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.httpd.daemon_threads = True
-        self.url = f'http://127.0.0.1:{self.httpd.server_address[1]}'
+        scheme = 'http'
+        if tls:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(TLS_DIR / 'server.pem', TLS_DIR / 'server-key.pem')
+            self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+            scheme = 'https'
+        self.url = f'{scheme}://127.0.0.1:{self.httpd.server_address[1]}'
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def close(self):
@@ -886,6 +933,48 @@ def test_complete_download_without_a_length_is_installed(run_addon, tmp_path):
         assert any('Downloading tiny model... 0 MB' in f.get('message', '') for f in seen)
         # Structurally whole, but not a real model: whisper.cpp says so, cleanly.
         assert err['type'] == 'error' and err['code'] == addon.ERR_MODEL_MISSING, err
+        a.close()
+    finally:
+        server.close()
+
+
+@needs_ffmpeg
+def test_https_download_trusts_the_system_store(run_addon, tmp_path):
+    """SSL_CERT_FILE stands in for a system store holding a corporate CA: the
+    certifi bundle must be added to it, not replace it."""
+    server = _ModelServer({'ggml-tiny.bin': FAKE_MODEL}, tls=True)
+    models = tmp_path / 'models'
+    try:
+        a = run_addon({'WHISPERCPP_ADDON_MODEL_BASE_URL': server.url,
+                       'WHISPERCPP_MODELS_DIR': str(models),
+                       'SSL_CERT_FILE': str(TLS_DIR / 'ca.pem'),
+                       'SSL_CERT_DIR': str(tmp_path / 'no-such-ca-dir')})
+        a.handshake()
+        err, _ = a.transcribe('r1', {'audio_path': str(JFK), 'options': {'model': 'tiny'}},
+                              timeout=120)
+        assert (models / 'ggml-tiny.bin').read_bytes() == FAKE_MODEL, err
+        assert err['code'] == addon.ERR_MODEL_MISSING, err  # the fake model itself
+        a.close()
+    finally:
+        server.close()
+
+
+@needs_ffmpeg
+def test_https_download_with_an_unknown_ca_names_the_certificate(run_addon, tmp_path):
+    server = _ModelServer({'ggml-tiny.bin': FAKE_MODEL}, tls=True)
+    models = tmp_path / 'models'
+    try:
+        a = run_addon({'WHISPERCPP_ADDON_MODEL_BASE_URL': server.url,
+                       'WHISPERCPP_MODELS_DIR': str(models),
+                       'SSL_CERT_FILE': str(tmp_path / 'no-such-ca.pem'),
+                       'SSL_CERT_DIR': str(tmp_path / 'no-such-ca-dir')})
+        a.handshake()
+        err, _ = a.transcribe('r1', {'audio_path': str(JFK), 'options': {'model': 'tiny'}},
+                              timeout=120)
+        assert err['code'] == addon.ERR_NETWORK_UNAVAILABLE, err
+        assert 'certificate' in err['message'], err
+        assert 'internet connection' not in err['message'], err
+        assert list(models.iterdir()) == []
         a.close()
     finally:
         server.close()

@@ -173,3 +173,16 @@ def test_static_third_party_licences_are_present():
                 'python-runtime-libs/openssl-LICENSE.txt'):
         assert (root / rel).is_file(), rel
     assert 'MIT License' in (root / 'whisper.cpp' / 'LICENSE').read_text(encoding='utf-8')
+
+
+def test_frozen_download_step_hides_the_runner_certificates():
+    """The runners have CA certificates where the bundled OpenSSL looks for
+    them; users' machines often do not. The frozen suite must not lean on them."""
+    step = WORKFLOW.split('Prove the frozen binary actually transcribes', 1)[1].split('- name:', 1)[0]
+    assert re.search(r"SSL_CERT_FILE: \$\{\{ runner\.temp \}\}/no-such-ca\.pem", step)
+    assert re.search(r"SSL_CERT_DIR: \$\{\{ runner\.temp \}\}/no-such-ca-dir", step)
+
+
+def test_certifi_is_a_declared_runtime_dependency():
+    assert re.search(r'^\s*"certifi[^"]*",', PYPROJECT, re.M)
+    assert "'certifi'" in SPEC

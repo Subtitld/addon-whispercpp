@@ -181,6 +181,12 @@ jobs:
           # not the cwd= it is handed.
           WHISPERCPP_TEST_BINARY: ${{ github.workspace }}/release-staging/bin/whispercpp-addon${{ matrix.exe_suffix }}
           WHISPERCPP_TEST_MODELS_DIR: ${{ runner.temp }}/whispercpp-models
+          # The runners keep CA certificates where the bundled OpenSSL looks
+          # for them; a Flatpak runtime, Fedora, Arch or a stock Mac does not.
+          # Point OpenSSL's defaults at nothing so the model download below
+          # has to succeed with the bundled certifi alone.
+          SSL_CERT_FILE: ${{ runner.temp }}/no-such-ca.pem
+          SSL_CERT_DIR: ${{ runner.temp }}/no-such-ca-dir
         run: |
           set -euo pipefail
           # The whole subprocess suite runs against the frozen binary; the

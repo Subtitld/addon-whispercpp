@@ -74,6 +74,7 @@ Other environment variables:
 | `SUBTITLD_MODELS_DIR` | Host model cache root (see above). |
 | `WHISPERCPP_ADDON_LOG_LEVEL` | `DEBUG` also shows whisper.cpp's own log. Default `INFO`. |
 | `WHISPERCPP_ADDON_MODEL_BASE_URL` | Model download mirror. Used by the tests. |
+| `SSL_CERT_FILE`, `SSL_CERT_DIR` | Extra CA certificates for the model download (added to the bundled ones). |
 
 ## Requirements
 
@@ -94,8 +95,12 @@ Other environment variables:
   map to Whisper's `zh`. An empty language means auto-detect. A language
   Whisper doesn't support (of Subtitld's list, only Zulu) is rejected with
   `unsupported_language`.
-- **Downloads** that end early are discarded, also when the server sends no
-  file size.
+- **Downloads** use HTTPS, trusting both the system's certificate store and
+  the certifi bundle shipped inside the add-on, so they work on systems whose
+  store the frozen binary cannot find (Flatpak, Fedora, Arch, macOS). If your
+  network inspects HTTPS through a proxy, point `SSL_CERT_FILE` at a file
+  with its certificate authority. A download that ends early is discarded,
+  also when the server sends no file size.
 - **Errors** use Subtitld's protocol codes: `model_missing` (including a
   corrupt model file, with the path to delete), `network_unavailable`
   (retryable), `disk_full`, `oom`, `unsupported_language`, `bad_params`,
@@ -110,7 +115,8 @@ Other environment variables:
 | Windows x86-64 | `whispercpp-<version>-windows-x86_64.zip` | CI only |
 
 Every platform's frozen binary runs the full subprocess test suite in CI,
-including a real transcription with `ggml-tiny.bin`, before it is packaged.
+including a real transcription with `ggml-tiny.bin` downloaded through the
+binary with the runner's own CA certificates hidden, before it is packaged.
 pywhispercpp 1.5.1 has no Intel macOS wheel, so there is no Intel Mac build.
 
 Archive layout:

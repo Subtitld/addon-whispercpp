@@ -40,6 +40,11 @@ once complete, so a partial file can never pass for a model. "Complete" is
 the server's Content-Length; a server that sends none gets the file's GGML
 structure walked instead (`_ggml_truncation`).
 
+TLS trusts the system store AND the bundled certifi bundle
+(`_download_ssl_context`). The frozen build's OpenSSL only looks where the
+BUILD machine keeps its CA certificates, which a Flatpak runtime, Fedora,
+Arch or a Mac without python.org's Python does not have.
+
 Configuration
 -------------
 Resolved per request, first hit wins: `params['options']` → the
@@ -599,6 +604,26 @@ def _ggml_truncation(path: Path) -> str | None:
         return None
 
 
+def _download_ssl_context() -> ssl.SSLContext:
+    """TLS for the model download: the system store PLUS the bundled certifi.
+
+    The frozen build's OpenSSL looks for the system store where the BUILD
+    machine keeps it (/usr/lib/ssl on Ubuntu, an empty python.org folder on
+    macOS). A Flatpak runtime, Fedora, Arch or a stock Mac has nothing
+    there, so without certifi every download fails verification.
+    `create_default_context(cafile=...)` is not used on purpose: it skips the
+    system store, and a corporate CA installed there (or named by
+    SSL_CERT_FILE) would stop working.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except Exception as exc:  # noqa: BLE001 — degrade to the system store, loudly
+        log.warning('bundled CA certificates unavailable, using the system store only: %s', exc)
+    return ctx
+
+
 def _interrupted(exc: BaseException, written: int) -> _AddonError:
     return _AddonError(
         ERR_NETWORK_UNAVAILABLE,
@@ -644,7 +669,8 @@ def _download(model: str, target: Path, state: '_Request', lo: float, hi: float)
     _emit_progress(req_id, lo, f'Downloading {model} model (first use)...')
     request = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=30) as resp:
+        with urllib.request.urlopen(request, timeout=30,
+                                    context=_download_ssl_context()) as resp:
             try:
                 total = int(resp.headers.get('Content-Length') or 0)
             except (TypeError, ValueError):
@@ -1152,6 +1178,15 @@ def _classify(exc: BaseException) -> tuple[str, str, bool]:
         return (ERR_NETWORK_UNAVAILABLE,
                 f'Model download failed (HTTP {exc.code}). Check your internet '
                 f'connection and try again.', True)
+    # urlopen wraps connection-time failures (DNS, refused, TLS handshake).
+    cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(cause, ssl.SSLCertVerificationError):
+        # Not the user's connection: retrying the same way cannot help.
+        return (ERR_NETWORK_UNAVAILABLE,
+                f'Model download failed: the download server\'s TLS certificate could not '
+                f'be verified ({cause.verify_message or cause}). If this network inspects HTTPS '
+                f'through a proxy, set SSL_CERT_FILE to a file with its certificate '
+                f'authority and try again.', False)
     if isinstance(exc, (urllib.error.URLError, http.client.HTTPException, ssl.SSLError,
                         TimeoutError, ConnectionError)):
         return (ERR_NETWORK_UNAVAILABLE,

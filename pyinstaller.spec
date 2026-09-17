@@ -39,7 +39,10 @@ SPEC_ROOT = Path(SPECPATH).resolve()
 # ---------------------------------------------------------------------------
 # pywhispercpp imports numpy at module scope (the binding takes numpy arrays)
 # and requests/tqdm in pywhispercpp/utils.py, so none of them can be excluded
-# even though the add-on never uses pywhispercpp's own downloader.
+# even though the add-on never uses pywhispercpp's own downloader. certifi is
+# the add-on's own: the model download trusts its CA bundle
+# (`_internal/certifi/cacert.pem`, collected by PyInstaller's certifi hook),
+# because the bundled OpenSSL cannot find the user's system store.
 _REQUIRED = ('pywhispercpp', '_pywhispercpp', 'numpy', 'platformdirs',
              'requests', 'tqdm', 'certifi')
 _missing = [name for name in _REQUIRED if importlib.util.find_spec(name) is None]
@@ -138,7 +141,7 @@ a = Analysis(
     # `_pywhispercpp` is imported by pywhispercpp.model; listed explicitly so a
     # future lazy import upstream cannot silently drop it.
     hiddenimports=['_pywhispercpp', 'pywhispercpp.model', 'pywhispercpp.utils',
-                   'pywhispercpp.constants', 'platformdirs'],
+                   'pywhispercpp.constants', 'platformdirs', 'certifi'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
