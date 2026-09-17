@@ -9,8 +9,10 @@ name: Release
 # The build job does not trust a handshake-only smoke test: whisper.cpp's
 # native libraries are only dlopen'ed at first transcription, so a bundle
 # missing one starts, says hello, and fails on the user's first click. Every
-# platform's FROZEN binary therefore runs the subprocess test suite, including
-# a real transcription with ggml-tiny.bin, before anything is packaged.
+# platform's FROZEN binary, unpacked from the release zip the way Subtitld
+# installs it, therefore runs the subprocess test suite, including a real
+# transcription with ggml-tiny.bin downloaded through it, before anything is
+# published.
 
 on:
   push:
@@ -173,13 +175,28 @@ jobs:
           otool -L release-staging/bin/_internal/_pywhispercpp*.so || true
           ls -la release-staging/bin/_internal/pywhispercpp/.dylibs || true
 
+      # Exactly what Subtitld's installer does: ZipFile.extractall (no
+      # symlinks, no permission bits), then chmod +x on the executable only.
+      - name: Install the archive like the host
+        shell: bash
+        run: |
+          python - "${{ runner.temp }}/installed" <<'PY'
+          import json, os, sys, zipfile
+          dest = sys.argv[1]
+          with zipfile.ZipFile(os.environ['ARCHIVE_NAME']) as zf:
+              zf.extractall(dest)
+              exe = os.path.join(dest, json.loads(zf.read('manifest.json'))['executable'])
+          os.chmod(exe, os.stat(exe).st_mode | 0o111)
+          print('installed', exe)
+          PY
+
       - name: Prove the frozen binary actually transcribes
         shell: bash
         env:
           WHISPERCPP_TEST_TRANSCRIPTION: '1'
           # Absolute: Popen resolves a relative exe against the CURRENT cwd,
           # not the cwd= it is handed.
-          WHISPERCPP_TEST_BINARY: ${{ github.workspace }}/release-staging/bin/whispercpp-addon${{ matrix.exe_suffix }}
+          WHISPERCPP_TEST_BINARY: ${{ runner.temp }}/installed/bin/whispercpp-addon${{ matrix.exe_suffix }}
           WHISPERCPP_TEST_MODELS_DIR: ${{ runner.temp }}/whispercpp-models
           # The runners keep CA certificates where the bundled OpenSSL looks
           # for them; a Flatpak runtime, Fedora, Arch or a stock Mac does not.

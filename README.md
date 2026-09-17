@@ -114,9 +114,10 @@ Other environment variables:
 | macOS arm64 | `whispercpp-<version>-macos-arm64.zip` | CI only |
 | Windows x86-64 | `whispercpp-<version>-windows-x86_64.zip` | CI only |
 
-Every platform's frozen binary runs the full subprocess test suite in CI,
-including a real transcription with `ggml-tiny.bin` downloaded through the
-binary with the runner's own CA certificates hidden, before it is packaged.
+Every platform's frozen binary, unpacked from its zip the way Subtitld
+installs it, runs the full subprocess test suite in CI before release. That
+includes a real transcription with `ggml-tiny.bin`, downloaded through the
+binary with the runner's own CA certificates hidden.
 pywhispercpp 1.5.1 has no Intel macOS wheel, so there is no Intel Mac build.
 
 Archive layout:
