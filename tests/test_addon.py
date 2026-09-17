@@ -613,9 +613,11 @@ def test_load_verdict_rejects_an_incomplete_init():
     lines = [(2, 'whisper_model_load: type = 1 (tiny)'),
              (4, 'whisper_model_load: ERROR not all tensors loaded from model file - expected 167, got 3'),
              (4, 'whisper_init_with_params_no_state: failed to load model')]
-    err = addon._load_failure(lines, Path('/m/ggml-tiny.bin'))
+    model = Path('/m/ggml-tiny.bin')
+    err = addon._load_failure(lines, model)
     assert err.code == addon.ERR_MODEL_MISSING
-    assert 'failed to load model' in err.message and '/m/ggml-tiny.bin' in err.message
+    # str(): the message shows the path as the platform writes it (\m\... on Windows).
+    assert 'failed to load model' in err.message and str(model) in err.message
     assert addon._load_failure([], Path('/m/x.bin')).code == addon.ERR_MODEL_MISSING
 
 
