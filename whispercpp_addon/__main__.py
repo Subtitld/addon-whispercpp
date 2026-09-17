@@ -162,8 +162,12 @@ _WHISPER_LANGUAGES = (
 )
 _LANGUAGE_SET = frozenset(_WHISPER_LANGUAGES)
 # Tags a host may send for a language Whisper spells differently.
+# Subtitld offers Chinese only as `cmn-hans-cn`, `cmn-hant-tw`, `yue-hant-hk`
+# (Mandarin, Cantonese). Whisper's `zh` covers both; its separate `yue` token
+# exists in large-v3 only, so every model gets `zh`.
 _LANGUAGE_ALIASES = {
     'jv': 'jw', 'iw': 'he', 'in': 'id', 'ji': 'yi', 'fil': 'tl', 'nb': 'no',
+    'cmn': 'zh', 'yue': 'zh',
 }
 
 # Model ids, URL, filename and User-Agent are byte-identical to the built-in

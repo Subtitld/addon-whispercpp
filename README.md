@@ -89,9 +89,11 @@ Other environment variables:
 - **Cancel** stops a running transcription within about a second, including
   one in the middle of decoding. A cancelled request never returns partial
   text as a finished result.
-- **Language:** tags like `pt-br` or `en_US` use their primary subtag. An
-  empty language means auto-detect. A language Whisper doesn't support is
-  rejected with `unsupported_language`.
+- **Language:** tags like `pt-br` or `en_US` use their primary subtag.
+  Subtitld's Chinese tags (`cmn-hans-cn`, `cmn-hant-tw`, `yue-hant-hk`, ...)
+  map to Whisper's `zh`. An empty language means auto-detect. A language
+  Whisper doesn't support (of Subtitld's list, only Zulu) is rejected with
+  `unsupported_language`.
 - **Errors** use Subtitld's protocol codes: `model_missing` (including a
   corrupt model file, with the path to delete), `network_unavailable`
   (retryable), `disk_full`, `oom`, `unsupported_language`, `bad_params`,

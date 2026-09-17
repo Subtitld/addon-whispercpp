@@ -237,10 +237,52 @@ def test_threads_from_env(clean_env):
 @pytest.mark.parametrize('tag,expected', [
     ('en', 'en'), ('pt-br', 'pt'), ('pt-BR', 'pt'), ('en_US', 'en'), ('zh-Hans-CN', 'zh'),
     ('haw', 'haw'), ('jv', 'jw'), ('fil', 'tl'), ('nb-no', 'no'),
+    ('cmn-hans-cn', 'zh'), ('cmn-Hant-TW', 'zh'), ('yue-hant-hk', 'zh'),
     ('', ''), (None, ''), ('auto', ''), ('und', ''),
 ])
 def test_language_resolution(tag, expected):
     assert addon._resolve_language(tag) == expected
+
+
+# Every value of Subtitld's `session.LANGUAGE_DICT_LIST` (the Import panel's
+# language box), copied as data so the add-on tests never import the host.
+HOST_LANGUAGE_VALUES = (
+    'af-za', 'am-et', 'ar-ae', 'ar-bh', 'ar-dz', 'ar-eg', 'ar-il', 'ar-iq', 'ar-jo',
+    'ar-kw', 'ar-lb', 'ar-ma', 'ar-om', 'ar-ps', 'ar-qa', 'ar-sa', 'ar-tn', 'az-az',
+    'bg-bg', 'bn-bd', 'bn-in', 'ca-es', 'cmn-hans-cn', 'cmn-hans-hk', 'cmn-hant-tw',
+    'cs-cz', 'da-dk', 'de-de', 'el-gr', 'en-au', 'en-ca', 'en-gb', 'en-gh', 'en-ie',
+    'en-in', 'en-ke', 'en-ng', 'en-nz', 'en-ph', 'en-sg', 'en-tz', 'en-us', 'en-za',
+    'es-ar', 'es-bo', 'es-cl', 'es-co', 'es-cr', 'es-do', 'es-ec', 'es-es', 'es-gt',
+    'es-hn', 'es-mx', 'es-ni', 'es-pa', 'es-pe', 'es-pr', 'es-py', 'es-sv', 'es-us',
+    'es-uy', 'es-ve', 'eu-es', 'fa-ir', 'fi-fi', 'fil-ph', 'fr-ca', 'fr-fr', 'gl-es',
+    'gu-in', 'he-il', 'hi-in', 'hr-hr', 'hu-hu', 'hy-am', 'id-id', 'is-is', 'it-it',
+    'ja-jp', 'jv-id', 'ka-ge', 'km-kh', 'kn-in', 'ko-kr', 'lo-la', 'lt-lt', 'lv-lv',
+    'ml-in', 'mr-in', 'ms-my', 'nb-no', 'ne-np', 'nl-nl', 'pl-pl', 'pt-br', 'pt-pt',
+    'ro-ro', 'ru-ru', 'si-lk', 'sk-sk', 'sl-si', 'sr-rs', 'su-id', 'sv-se', 'sw-ke',
+    'sw-tz', 'ta-in', 'ta-lk', 'ta-my', 'ta-sg', 'te-in', 'th-th', 'tr-tr', 'uk-ua',
+    'ur-in', 'ur-pk', 'vi-vn', 'yue-hant-hk', 'zu-za',
+)
+# Languages the host offers that Whisper has no model for.
+HOST_LANGUAGES_WHISPER_LACKS = {'zu-za'}  # Zulu
+
+
+def test_every_language_the_host_offers_resolves():
+    """The host sends its tag verbatim and never filters engines by language,
+    so a tag the add-on rejects makes that project language untranscribable
+    (Chinese was, until `cmn`/`yue` were aliased)."""
+    assert len(HOST_LANGUAGE_VALUES) == len(set(HOST_LANGUAGE_VALUES)) == 120
+    rejected = set()
+    for tag in HOST_LANGUAGE_VALUES:
+        try:
+            code = addon._resolve_language(tag)
+        except addon._AddonError as exc:
+            assert exc.code == addon.ERR_UNSUPPORTED_LANGUAGE
+            rejected.add(tag)
+        else:
+            assert code in addon._LANGUAGE_SET, (tag, code)
+    assert rejected == HOST_LANGUAGES_WHISPER_LACKS, (
+        f'rejected host languages: {sorted(rejected)}; '
+        f'only {sorted(HOST_LANGUAGES_WHISPER_LACKS)} lack a Whisper model')
 
 
 @pytest.mark.parametrize('tag', ['xx', 'klingon', 'por', 'e'])
