@@ -32,6 +32,7 @@ import http.server
 import json
 import os
 import queue
+import shlex
 import shutil
 import socket
 import subprocess
@@ -62,7 +63,8 @@ transcription = pytest.mark.skipif(
 # Env vars from the developer's shell must not leak into the subprocess.
 _SCRUB = ('WHISPERCPP_MODEL', 'WHISPERCPP_THREADS', 'WHISPERCPP_PHRASE_GROUPING',
           'WHISPERCPP_MODELS_DIR', 'WHISPERCPP_ADDON_MODEL_BASE_URL',
-          'SUBTITLD_MODELS_DIR', 'SUBTITLD_TEMP_DIR')
+          'SUBTITLD_MODELS_DIR', 'SUBTITLD_TEMP_DIR', 'SUBTITLD_FFMPEG_EXECUTABLE',
+          'FFMPEG_EXECUTABLE')
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +73,11 @@ _SCRUB = ('WHISPERCPP_MODEL', 'WHISPERCPP_THREADS', 'WHISPERCPP_PHRASE_GROUPING'
 class _Addon:
     def __init__(self, env_extra=None, exe=BINARY):
         env = {k: v for k, v in os.environ.items() if k not in _SCRUB}
-        env.update(env_extra or {})
+        for key, value in (env_extra or {}).items():
+            if value is None:
+                env.pop(key, None)  # None removes a variable
+            else:
+                env[key] = value
         env['PYTHONPATH'] = str(REPO_ROOT)
         env['PYTHONUNBUFFERED'] = '1'
         cmd = [exe] if exe else [sys.executable, '-m', 'whispercpp_addon']
@@ -426,6 +432,25 @@ def test_error_mapping():
     assert addon._classify(ValueError('boom'))[0] == addon.ERR_INTERNAL
 
 
+def test_child_env_restores_the_host_library_path(monkeypatch):
+    monkeypatch.setattr(addon.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(addon.sys, 'platform', 'linux')
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/bundle/_internal:/host/lib')
+    monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', '/host/lib')
+    monkeypatch.setenv('SOMETHING_ELSE', 'kept')
+    env = addon._child_env()
+    assert env['LD_LIBRARY_PATH'] == '/host/lib'
+    assert env['SOMETHING_ELSE'] == 'kept'
+    monkeypatch.setenv('LD_LIBRARY_PATH', '/bundle/_internal')
+    monkeypatch.delenv('LD_LIBRARY_PATH_ORIG')
+    assert 'LD_LIBRARY_PATH' not in addon._child_env()
+    monkeypatch.setattr(addon.sys, 'platform', 'win32')
+    assert addon._child_env() is None, 'only the Linux bootloader rewrites it'
+    monkeypatch.setattr(addon.sys, 'platform', 'linux')
+    monkeypatch.delattr(addon.sys, 'frozen')
+    assert addon._child_env() is None, 'from source the environment is the host\'s own'
+
+
 def test_native_log_callback_never_raises_and_captures():
     addon._on_native_log('not-a-level', None)
     addon._on_native_log(4, 'whisper_init: failed to load model\n', object())
@@ -709,6 +734,50 @@ def test_unreachable_model_host_is_retryable(run_addon, tmp_path):
     assert err['code'] == addon.ERR_NETWORK_UNAVAILABLE
     assert err['retryable'] is True
     a.close()
+
+
+if sys.platform.startswith('linux'):
+    # Linux only, and defined only there rather than skipped: CI refuses
+    # skipped tests, and only the Linux bootloader rewrites LD_LIBRARY_PATH.
+    @needs_ffmpeg
+    @pytest.mark.parametrize('host_value', ['/opt/subtitld-test-hostlibs', None])
+    def test_ffmpeg_does_not_inherit_the_bundle_library_path(run_addon, tmp_path, host_value):
+        """The frozen bootloader puts `_internal/` (the build machine's
+        libstdc++) on LD_LIBRARY_PATH. A system ffmpeg that inherits it fails
+        to load on any distro newer than the build machine ("GLIBCXX_3.4.32
+        not found"); the CI runner's own ffmpeg never shows that, so the fake
+        ffmpeg here refuses to run instead."""
+        bundle = str(Path(BINARY).resolve().parent / '_internal') if BINARY else None
+        existing = os.environ.get('LD_LIBRARY_PATH')
+        env = {'WHISPERCPP_MODELS_DIR': str(tmp_path / 'models'),
+               'WHISPERCPP_ADDON_MODEL_BASE_URL': 'http://127.0.0.1:9'}
+        if host_value is not None:
+            # Keep whatever the interpreter itself may need (setup-python sets it).
+            expected = host_value + (os.pathsep + existing if existing else '')
+            env['LD_LIBRARY_PATH'] = expected
+        elif BINARY:
+            env['LD_LIBRARY_PATH'] = None  # the bundle needs nothing from the host
+            expected = '<unset>'
+        else:
+            expected = existing if existing is not None else '<unset>'
+        record = tmp_path / 'ffmpeg-env.txt'
+        fake = tmp_path / 'ffmpeg'
+        leak_check = (f'case "${{LD_LIBRARY_PATH-}}" in *{shlex.quote(bundle)}*) '
+                      f'echo "bundle libraries leaked to ffmpeg: $LD_LIBRARY_PATH" >&2; exit 1;; esac\n'
+                      if bundle else '')
+        fake.write_text('#!/bin/sh\n'
+                        f'printf %s "${{LD_LIBRARY_PATH-<unset>}}" > {shlex.quote(str(record))}\n'
+                        + leak_check +
+                        f'exec {shlex.quote(FFMPEG)} "$@"\n')
+        fake.chmod(0o755)
+        env['SUBTITLD_FFMPEG_EXECUTABLE'] = str(fake)
+        clip = _silence(tmp_path / 'blip.wav', 0.05)  # decoded, then no model needed
+        a = run_addon(env)
+        a.handshake()
+        res, _ = a.transcribe('r1', {'audio_path': str(clip)}, timeout=60)
+        assert res['type'] == 'result', res
+        assert record.read_text() == expected
+        a.close()
 
 
 @needs_ffmpeg

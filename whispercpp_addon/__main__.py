@@ -80,6 +80,10 @@ Native pitfalls handled here
   Audio under 0.1 s never reaches it; whisper.cpp refuses that anyway.
 * pywhispercpp's `Model.__del__` raises at interpreter teardown, so the model
   is freed explicitly before `main()` returns.
+* The frozen Linux bootloader puts the bundle's `_internal/` (build machine's
+  libstdc++, OpenSSL, zlib, ...) on LD_LIBRARY_PATH. A system ffmpeg must not
+  inherit that: its own libraries need a newer libstdc++ on any distro newer
+  than the build machine. `_child_env` restores the host's value.
 
 stdio
 -----
@@ -421,6 +425,27 @@ def _no_window_startupinfo():
     return si
 
 
+def _child_env() -> dict | None:
+    """Environment for external programs, or None to inherit ours unchanged.
+
+    The frozen Linux bootloader prepends the bundle's `_internal/` to
+    LD_LIBRARY_PATH, and a system ffmpeg that inherits it loads the build
+    machine's libstdc++ instead of its own and dies with "GLIBCXX_3.4.32 not
+    found" on Ubuntu 24.04, Debian 13, Fedora and Arch. This is PyInstaller's
+    documented restore: the bootloader saves the host's value in
+    LD_LIBRARY_PATH_ORIG, and sets none when the host had none.
+    """
+    if not (getattr(sys, 'frozen', False) and sys.platform.startswith('linux')):
+        return None
+    env = dict(os.environ)
+    original = env.get('LD_LIBRARY_PATH_ORIG')
+    if original is not None:
+        env['LD_LIBRARY_PATH'] = original
+    else:
+        env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
 def _convert_to_wav(ffmpeg: str, src: str, dst: Path, cancel: threading.Event) -> None:
     """Decode anything ffmpeg reads into 16 kHz mono s16 WAV.
 
@@ -433,7 +458,8 @@ def _convert_to_wav(ffmpeg: str, src: str, dst: Path, cancel: threading.Event) -
            '-ac', '1', '-ar', str(_SAMPLE_RATE), '-c:a', 'pcm_s16le', '-f', 'wav',
            str(dst)]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE, startupinfo=_no_window_startupinfo())
+                            stderr=subprocess.PIPE, env=_child_env(),
+                            startupinfo=_no_window_startupinfo())
     stderr = b''
     while True:
         try:
