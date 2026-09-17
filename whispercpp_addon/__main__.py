@@ -36,7 +36,9 @@ Hugging Face as `ggml-<model>.bin`. The directory is resolved first hit wins:
 
 Never inside the add-on's install directory: the host deletes that on every
 upgrade. Downloads go to a `.part` sibling and are renamed into place only
-once complete, so a partial file can never pass for a model.
+once complete, so a partial file can never pass for a model. "Complete" is
+the server's Content-Length; a server that sends none gets the file's GGML
+structure walked instead (`_ggml_truncation`).
 
 Configuration
 -------------
@@ -97,12 +99,15 @@ child (which reads keystrokes from an inherited stdin).
 from __future__ import annotations
 
 import errno
+import http.client
 import json
 import logging
 import multiprocessing
 import os
 import platform
 import shutil
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -188,6 +193,17 @@ _AVAILABLE_MODELS = (
 )
 _DOWNLOAD_CHUNK_BYTES = 256 * 1024
 _GGML_MAGIC = b'lmgg'  # 0x67676d6c little-endian, the first 4 bytes of every model
+# whisper.cpp's model layout (`whisper_model_load`, 1.8.5): the magic, these
+# int32 hyperparameters, the mel filterbank, the vocabulary, then tensors
+# until end of file. A complete model has 11 fixed tensors plus 15 per
+# encoder layer and 24 per decoder layer (tiny: 167, large-v3: 1259).
+_GGML_HPARAMS = ('n_vocab', 'n_audio_ctx', 'n_audio_state', 'n_audio_head', 'n_audio_layer',
+                 'n_text_ctx', 'n_text_state', 'n_text_head', 'n_text_layer', 'n_mels', 'ftype')
+# ggml tensor type -> (bytes per block, elements per block). The official
+# ggml-<model>.bin files only use F32 and F16; the classic quantised types are
+# listed for mirrors. Any other type ends the check as "cannot tell".
+_GGML_TYPE_LAYOUT = {0: (4, 1), 1: (2, 1), 2: (18, 32), 3: (20, 32),
+                     6: (22, 32), 7: (24, 32), 8: (34, 32)}
 # A `.part` older than this belongs to a dead process (a live download keeps
 # touching its file). Without the sweep, a cancelled large-v3 download under
 # the built-in left 3 GB of garbage behind forever.
@@ -519,6 +535,78 @@ def _sweep_stale_parts(target: Path) -> None:
             pass
 
 
+def _ggml_truncation(path: Path) -> str | None:
+    """Why a downloaded whisper.cpp model is incomplete; None if it is whole.
+
+    Only needed when the server sent no Content-Length: a connection that
+    drops mid-body then looks exactly like the end of the file. Walks the
+    layout without reading tensor data (about 1,300 small reads for
+    large-v3). None also means "cannot tell" (a tensor type or a layout this
+    check does not know); whisper.cpp's own load check still runs after it.
+    """
+    size = path.stat().st_size
+    with open(path, 'rb') as f:
+        def take(count: int) -> tuple[int, ...]:
+            data = f.read(4 * count)
+            if len(data) != 4 * count:
+                raise EOFError
+            return struct.unpack(f'<{count}i', data)
+
+        def skip(nbytes: int) -> None:
+            f.seek(nbytes, os.SEEK_CUR)  # past the end is fine; the next take() fails
+
+        where = 'the header'
+        try:
+            if f.read(4) != _GGML_MAGIC:
+                return 'it has no whisper.cpp header'
+            hparams = dict(zip(_GGML_HPARAMS, take(len(_GGML_HPARAMS)), strict=True))
+            n_mel, n_fft = take(2)
+            layers = (hparams['n_audio_layer'], hparams['n_text_layer'])
+            if not (0 <= n_mel <= 4096 and 0 <= n_fft <= 65536 and all(0 <= n <= 1024 for n in layers)):
+                return None
+            skip(4 * n_mel * n_fft)
+            (n_vocab,) = take(1)
+            if not 0 <= n_vocab <= 1_000_000:
+                return None
+            for _ in range(n_vocab):
+                (length,) = take(1)
+                if not 0 <= length <= 65536:
+                    return None
+                skip(length)
+            expected = 11 + 15 * layers[0] + 24 * layers[1]
+            tensors = 0
+            while f.tell() < size:
+                where = f'tensor {tensors + 1} of {expected}'
+                n_dims, name_len, ttype = take(3)
+                if not (1 <= n_dims <= 4 and 0 < name_len <= 1024):
+                    return None
+                dims = take(n_dims)
+                layout = _GGML_TYPE_LAYOUT.get(ttype)
+                if layout is None or any(d < 0 for d in dims):
+                    return None
+                elements = 1
+                for d in dims:
+                    elements *= d
+                block_bytes, block_elements = layout
+                skip(name_len + elements // block_elements * block_bytes)
+                tensors += 1
+        except EOFError:
+            return f'the file stops inside {where} after {size} bytes'
+        if f.tell() > size:
+            return f'the file stops inside tensor {tensors} of {expected} after {size} bytes'
+        if tensors < expected:
+            return f'the file has {tensors} of the model\'s {expected} tensors'
+        return None
+
+
+def _interrupted(exc: BaseException, written: int) -> _AddonError:
+    return _AddonError(
+        ERR_NETWORK_UNAVAILABLE,
+        f'Model download was interrupted after {written // 2**20} MB '
+        f'({_describe_network_error(exc)}). Check your internet connection and try again.',
+        retryable=True)
+
+
 _download_lock = threading.Lock()
 
 
@@ -576,7 +664,12 @@ def _download(model: str, target: Path, state: '_Request', lo: float, hi: float)
                 while True:
                     if state.cancel.is_set():
                         raise _Cancelled()
-                    chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+                    try:
+                        chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+                    except (http.client.HTTPException, OSError) as exc:
+                        # Socket errors, TLS errors, timeouts, and a chunked
+                        # body cut short (IncompleteRead). No file I/O here.
+                        raise _interrupted(exc, written) from exc
                     if not chunk:
                         break
                     if len(head) < 4:
@@ -597,6 +690,10 @@ def _download(model: str, target: Path, state: '_Request', lo: float, hi: float)
                                 req_id, lo + (hi - lo) * (written / total),
                                 f'Downloading {model} model... '
                                 f'{written // 2**20} / {total_mb} MB')
+                    elif written // (16 * 2**20) != last_step:  # size unknown: MB only
+                        last_step = written // (16 * 2**20)
+                        _emit_progress(req_id, lo, f'Downloading {model} model... '
+                                                   f'{written // 2**20} MB')
                 out.flush()
                 os.fsync(out.fileno())
             if total and written != total:
@@ -606,6 +703,14 @@ def _download(model: str, target: Path, state: '_Request', lo: float, hi: float)
             if written < 4 or head != _GGML_MAGIC:
                 raise _AddonError(ERR_MODEL_MISSING,
                                   f'{url} returned no model data.', retryable=True)
+            if not total:
+                reason = _ggml_truncation(part)
+                if reason:
+                    raise _AddonError(
+                        ERR_NETWORK_UNAVAILABLE,
+                        f'Model download ended early: the server sent no file size, and '
+                        f'{reason}. Check your internet connection and try again.',
+                        retryable=True)
         # Atomic: a partial file can never masquerade as a finished one.
         os.replace(part, target)
     except BaseException:
@@ -1022,6 +1127,18 @@ def _classify_os_error(exc: OSError, context: str) -> _AddonError:
     return _AddonError(ERR_INTERNAL, f'{context}: {exc}')
 
 
+def _describe_network_error(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.URLError):
+        return str(exc.reason)
+    name, text = type(exc).__name__, str(exc)
+    if not text:
+        return name
+    # http.client's messages alone ("Remote end closed ...") hide what failed.
+    if isinstance(exc, http.client.HTTPException) and not text.startswith(name):
+        return f'{name}: {text}'
+    return text
+
+
 def _classify(exc: BaseException) -> tuple[str, str, bool]:
     """Map an unexpected exception onto a protocol error."""
     if isinstance(exc, _AddonError):
@@ -1035,12 +1152,12 @@ def _classify(exc: BaseException) -> tuple[str, str, bool]:
         return (ERR_NETWORK_UNAVAILABLE,
                 f'Model download failed (HTTP {exc.code}). Check your internet '
                 f'connection and try again.', True)
-    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
-        reason = getattr(exc, 'reason', exc)
+    if isinstance(exc, (urllib.error.URLError, http.client.HTTPException, ssl.SSLError,
+                        TimeoutError, ConnectionError)):
         return (ERR_NETWORK_UNAVAILABLE,
-                f'Model download failed ({reason}). Check your internet connection '
-                f'and try again. Once a model is downloaded, transcription is fully offline.',
-                True)
+                f'Model download failed ({_describe_network_error(exc)}). Check your internet '
+                f'connection and try again. Once a model is downloaded, transcription is '
+                f'fully offline.', True)
     if isinstance(exc, OSError):
         err = _classify_os_error(exc, 'I/O error')
         return err.code, err.message, err.retryable

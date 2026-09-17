@@ -28,6 +28,7 @@ work in the public domain.
 from __future__ import annotations
 
 import errno
+import http.client
 import http.server
 import json
 import os
@@ -35,6 +36,8 @@ import queue
 import shlex
 import shutil
 import socket
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -432,6 +435,23 @@ def test_error_mapping():
     assert addon._classify(ValueError('boom'))[0] == addon.ERR_INTERNAL
 
 
+@pytest.mark.parametrize('exc', [
+    http.client.IncompleteRead(b'', 100),
+    http.client.RemoteDisconnected('Remote end closed connection without response'),
+    http.client.BadStatusLine('garbage'),
+    ssl.SSLError(1, 'record layer failure'),
+    ConnectionResetError(errno.ECONNRESET, 'Connection reset by peer'),
+    TimeoutError('timed out'),
+    urllib.error.URLError(socket.gaierror(-3, 'Temporary failure in name resolution')),
+    urllib.error.URLError(OSError(errno.ENETUNREACH, 'Network is unreachable')),
+])
+def test_dropped_connections_are_retryable_network_errors(exc):
+    """A cut download used to surface as a non-retryable `internal` error."""
+    code, message, retryable = addon._classify(exc)
+    assert (code, retryable) == (addon.ERR_NETWORK_UNAVAILABLE, True), message
+    assert 'internet connection' in message
+
+
 def test_child_env_restores_the_host_library_path(monkeypatch):
     monkeypatch.setattr(addon.sys, 'frozen', True, raising=False)
     monkeypatch.setattr(addon.sys, 'platform', 'linux')
@@ -449,6 +469,74 @@ def test_child_env_restores_the_host_library_path(monkeypatch):
     monkeypatch.setattr(addon.sys, 'platform', 'linux')
     monkeypatch.delattr(addon.sys, 'frozen')
     assert addon._child_env() is None, 'from source the environment is the host\'s own'
+
+
+# ---------------------------------------------------------------------------
+# Offline: completeness of a download that came without a Content-Length
+# ---------------------------------------------------------------------------
+def _ggml_model(audio_layers=1, text_layers=1, tensor_elements=300) -> bytes:
+    """A structurally complete whisper.cpp model with tiny F32/F16 tensors."""
+    hparams = dict.fromkeys(addon._GGML_HPARAMS, 4)
+    hparams.update(n_vocab=3, n_audio_layer=audio_layers, n_text_layer=text_layers,
+                   n_mels=2, ftype=1)
+    out = bytearray(addon._GGML_MAGIC)
+    out += struct.pack('<11i', *(hparams[k] for k in addon._GGML_HPARAMS))
+    out += struct.pack('<2i', 2, 3) + b'\0' * (4 * 2 * 3)
+    out += struct.pack('<i', 3)
+    for word in (b'a', b'bc', b''):
+        out += struct.pack('<i', len(word)) + word
+    count = 11 + 15 * audio_layers + 24 * text_layers
+    for i in range(count):
+        name = f'tensor.{i}'.encode()
+        ttype = i % 2  # F32, F16
+        out += struct.pack('<3i', 2, len(name), ttype)
+        out += struct.pack('<2i', tensor_elements // 3, 3) + name
+        out += b'\x01' * (tensor_elements * (4, 2)[ttype])
+    return bytes(out)
+
+
+def test_ggml_walk_matches_whisper_cpp_tensor_count():
+    """whisper.cpp's own message for a cut tiny model: 'expected 167'."""
+    tiny = dict(n_audio_layer=4, n_text_layer=4)
+    assert 11 + 15 * tiny['n_audio_layer'] + 24 * tiny['n_text_layer'] == 167
+
+
+def test_ggml_truncation_accepts_a_complete_model(tmp_path):
+    path = tmp_path / 'ggml-tiny.bin'
+    path.write_bytes(_ggml_model())
+    assert addon._ggml_truncation(path) is None
+
+
+@pytest.mark.parametrize('keep', [
+    4, 20, 60, 100,               # inside the hyperparameters, filterbank or vocabulary
+    'first-tensor-header',        # inside a tensor header
+    'mid-tensor',                 # inside tensor data
+    'boundary',                   # exactly between two tensors: short on tensors
+    -1,                           # one byte short
+])
+def test_ggml_truncation_catches_every_kind_of_cut(tmp_path, keep):
+    data = _ggml_model()
+    header = 4 + 44 + 8 + 24 + 4 + (4 + 1) + (4 + 2) + 4
+    one_tensor = 12 + 8 + len(b'tensor.0') + 300 * 4
+    offsets = {'first-tensor-header': header + 5, 'mid-tensor': header + one_tensor // 2,
+               'boundary': header + one_tensor + 12 + 8 + len(b'tensor.1') + 300 * 2}
+    cut = offsets.get(keep, keep)
+    assert data[header + 12 + 8:header + 12 + 8 + 8] == b'tensor.0', 'layout drifted'
+    path = tmp_path / 'ggml-tiny.bin'
+    path.write_bytes(data[:cut])
+    reason = addon._ggml_truncation(path)
+    assert reason, f'a model cut at {cut} of {len(data)} bytes passed as complete'
+
+
+def test_ggml_truncation_cannot_judge_unknown_layouts(tmp_path):
+    data = bytearray(_ggml_model())
+    header = 4 + 44 + 8 + 24 + 4 + (4 + 1) + (4 + 2) + 4
+    data[header + 8:header + 12] = struct.pack('<i', 99)  # unknown tensor type
+    path = tmp_path / 'ggml-x.bin'
+    path.write_bytes(bytes(data))
+    assert addon._ggml_truncation(path) is None
+    path.write_bytes(b'lmgg' + struct.pack('<11i', *([-5] * 11)) + b'\0' * 100)
+    assert addon._ggml_truncation(path) is None, 'garbage is for whisper.cpp to reject'
 
 
 def test_native_log_callback_never_raises_and_captures():
@@ -578,30 +666,53 @@ def test_unknown_frame_still_answers(run_addon):
 # ffmpeg + download path, against a local HTTP server and a fake model
 # ---------------------------------------------------------------------------
 class _ModelServer:
-    """Serves /ggml-<model>.bin from a dict, optionally slowly."""
+    """Serves /ggml-<model>.bin from a dict, optionally slowly.
 
-    def __init__(self, files: dict[str, bytes], delay: float = 0.0, chunk: int = 65536):
+    body: 'length' sends Content-Length; 'close' sends none and ends the body
+    by closing the connection; 'chunked' uses chunked transfer encoding.
+    `cut_at` drops the connection after that many body bytes.
+    """
+
+    def __init__(self, files: dict[str, bytes], delay: float = 0.0, chunk: int = 65536,
+                 body: str = 'length', cut_at: int | None = None):
         outer = self
         self.files = files
         self.hits: list[str] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1' if body == 'chunked' else 'HTTP/1.0'
+
             def do_GET(self):
                 outer.hits.append(self.path)
                 assert self.headers.get('User-Agent') == 'subtitld-whispercpp/1'
-                body = outer.files.get(self.path.lstrip('/'))
-                if body is None:
+                data = outer.files.get(self.path.lstrip('/'))
+                if data is None:
                     self.send_error(404)
                     return
+                sent = data if cut_at is None else data[:cut_at]
                 self.send_response(200)
-                self.send_header('Content-Length', str(len(body)))
+                if body == 'length':
+                    self.send_header('Content-Length', str(len(data)))
+                elif body == 'chunked':
+                    self.send_header('Transfer-Encoding', 'chunked')
+                self.send_header('Connection', 'close')
+                self.close_connection = True
                 self.end_headers()
                 try:
-                    for i in range(0, len(body), chunk):
-                        self.wfile.write(body[i:i + chunk])
+                    for i in range(0, len(sent), chunk):
+                        piece = sent[i:i + chunk]
+                        if body == 'chunked':
+                            # A cut lands inside a chunk: announce the full one.
+                            full = len(data[i:i + chunk])
+                            self.wfile.write(f'{full:x}\r\n'.encode() + piece
+                                             + (b'\r\n' if len(piece) == full else b''))
+                        else:
+                            self.wfile.write(piece)
                         self.wfile.flush()
                         if delay:
                             time.sleep(delay)
+                    if body == 'chunked' and cut_at is None:
+                        self.wfile.write(b'0\r\n\r\n')
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
@@ -734,6 +845,50 @@ def test_unreachable_model_host_is_retryable(run_addon, tmp_path):
     assert err['code'] == addon.ERR_NETWORK_UNAVAILABLE
     assert err['retryable'] is True
     a.close()
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize('body', ['close', 'chunked'])
+def test_download_cut_short_without_a_length_is_not_installed(run_addon, tmp_path, body):
+    """Without Content-Length a dropped connection looks like the end of the
+    file; the add-on used to install such a file as the model for good. A cut
+    chunked body used to come back as a non-retryable `internal` error."""
+    model = _ggml_model(audio_layers=2, text_layers=2)
+    server = _ModelServer({'ggml-tiny.bin': model}, body=body, cut_at=len(model) // 2,
+                          chunk=4096)
+    models = tmp_path / 'models'
+    try:
+        a = run_addon({'WHISPERCPP_ADDON_MODEL_BASE_URL': server.url,
+                       'WHISPERCPP_MODELS_DIR': str(models)})
+        a.handshake()
+        err, _ = a.transcribe('r1', {'audio_path': str(JFK), 'options': {'model': 'tiny'}},
+                              timeout=120)
+        assert err['type'] == 'error', err
+        assert (err['code'], err['retryable']) == (addon.ERR_NETWORK_UNAVAILABLE, True), err
+        assert list(models.iterdir()) == [], 'a partial model was installed'
+        a.close()
+    finally:
+        server.close()
+
+
+@needs_ffmpeg
+def test_complete_download_without_a_length_is_installed(run_addon, tmp_path):
+    model = _ggml_model()
+    server = _ModelServer({'ggml-tiny.bin': model}, body='close', chunk=4096)
+    models = tmp_path / 'models'
+    try:
+        a = run_addon({'WHISPERCPP_ADDON_MODEL_BASE_URL': server.url,
+                       'WHISPERCPP_MODELS_DIR': str(models)})
+        a.handshake()
+        err, seen = a.transcribe('r1', {'audio_path': str(JFK), 'options': {'model': 'tiny'}},
+                                 timeout=120)
+        assert (models / 'ggml-tiny.bin').read_bytes() == model
+        assert any('Downloading tiny model... 0 MB' in f.get('message', '') for f in seen)
+        # Structurally whole, but not a real model: whisper.cpp says so, cleanly.
+        assert err['type'] == 'error' and err['code'] == addon.ERR_MODEL_MISSING, err
+        a.close()
+    finally:
+        server.close()
 
 
 if sys.platform.startswith('linux'):

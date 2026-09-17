@@ -94,6 +94,8 @@ Other environment variables:
   map to Whisper's `zh`. An empty language means auto-detect. A language
   Whisper doesn't support (of Subtitld's list, only Zulu) is rejected with
   `unsupported_language`.
+- **Downloads** that end early are discarded, also when the server sends no
+  file size.
 - **Errors** use Subtitld's protocol codes: `model_missing` (including a
   corrupt model file, with the path to delete), `network_unavailable`
   (retryable), `disk_full`, `oom`, `unsupported_language`, `bad_params`,
