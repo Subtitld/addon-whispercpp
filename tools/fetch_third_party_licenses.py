@@ -166,8 +166,15 @@ def _harvest_dist(dist, out: Path) -> list[str]:
         shutil.copyfile(src, dest)
         copied.append(str(dest.relative_to(out)).replace('\\', '/'))
     if copied:
+        licence = _license_field(dist)
+        # MPL-2.0 (tqdm, certifi) ships here only as bytecode, its "Executable
+        # Form"; §3.2(a) requires saying where the Source Code Form is.
+        mpl = ('The Source Code Form of this MPL-licensed component is the sdist at\n'
+               'the URL above.\n' if 'MPL' in licence else '')
         (target / 'SOURCE.txt').write_text(
-            f'{name} {version}\nLicence: {_license_field(dist)}\n'
+            f'{name} {version}\nLicence: {licence}\n'
+            f'Source: https://pypi.org/project/{name}/{version}/#files\n'
+            f'{mpl}'
             f'Harvested from the installed distribution used for this build.\n',
             encoding='utf-8')
     return copied

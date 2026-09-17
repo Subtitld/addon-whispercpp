@@ -200,4 +200,5 @@ needs. It is licensed under the **LGPL-2.1-or-later**
 build, and its complete source is attached to every GitHub release as
 `whispercpp-addon-<version>-libquadmath-source.tar.gz`
 (`tools/build_libquadmath_source.py`). The build refuses to publish when the
-bundled copy is a different build.
+bundled copy is a different build. tqdm and certifi are MPL-2.0 and ship as
+bytecode; their `SOURCE.txt` links their source on PyPI.
