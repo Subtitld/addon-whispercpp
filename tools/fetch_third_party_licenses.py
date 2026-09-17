@@ -5,12 +5,12 @@ Copyright 2026 Subtitld contributors
 SPDX-License-Identifier: Apache-2.0
 
 The frozen bundle carries CPython and its native libraries (OpenSSL, expat,
-libffi, zlib, ...), the PyInstaller bootloader, pywhispercpp, the
-whisper.cpp/ggml native libraries, numpy (with OpenBLAS and the GCC Fortran
-runtime), requests and friends, and — per platform — the GCC runtime
-(libgomp, libstdc++) or the MSVC runtime. PyInstaller drops `.dist-info`
-licence files (except the ones it needs for metadata), so the notices have to
-be put back explicitly.
+libffi, zlib, ...), the PyInstaller bootloader, pywhispercpp (with pybind11
+compiled in), the whisper.cpp/ggml native libraries, numpy (with OpenBLAS and,
+on Linux, the GCC Fortran runtime and LGPL libquadmath), requests and friends,
+and — per platform — the GCC runtime (libgomp, libstdc++) or the MSVC
+runtime. PyInstaller drops `.dist-info` licence files (except the ones it
+needs for metadata), so the notices have to be put back explicitly.
 
 Two sources:
 
@@ -19,10 +19,13 @@ Two sources:
     paths preserved (numpy ships several files all called LICENSE.md), plus
     CPython's own licence and PyInstaller's (bootloader exception).
   * **Committed** in this repository's THIRD_PARTY_LICENSES/: texts the wheels
-    do not carry — whisper.cpp, OpenAI Whisper (the model weights), the GCC
-    runtime's GPL + Runtime Library Exception (Linux), the MSVC runtime
-    notice (Windows) and the Python runtime's native libraries. `--refresh`
-    re-fetches the upstream ones from pinned URLs.
+    do not carry — whisper.cpp, pybind11 (built into _pywhispercpp but not an
+    installed distribution), OpenAI Whisper (the model weights), the GCC
+    runtime's GPL + Runtime Library Exception and libquadmath's LGPL-2.1
+    (Linux), the MSVC runtime notice (Windows) and the Python runtime's
+    native libraries. `--refresh` re-fetches the upstream ones from pinned
+    URLs. libquadmath's source is a separate release asset
+    (tools/build_libquadmath_source.py).
 
 This is a BUILD-FAILING step: if a required notice is missing, the archive
 must not ship.
@@ -55,6 +58,9 @@ _REFRESH = {
         f'https://raw.githubusercontent.com/ggml-org/whisper.cpp/{WHISPER_CPP_TAG}/LICENSE',
     'pybind11/LICENSE':
         f'https://raw.githubusercontent.com/pybind/pybind11/{PYBIND11_COMMIT}/LICENSE',
+    # numpy.libs' libquadmath is CentOS 7's GCC 4.8.5 build; see libquadmath/SOURCE.txt.
+    'libquadmath/COPYING.LIB':
+        'https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-4.8.5/libquadmath/COPYING.LIB',
     'openai-whisper/LICENSE':
         f'https://raw.githubusercontent.com/openai/whisper/{OPENAI_WHISPER_TAG}/LICENSE',
     'gcc-runtime/COPYING3':
@@ -76,7 +82,9 @@ _REFRESH = {
 }
 
 # Static components that only apply to one platform's bundle.
-_PLATFORM_ONLY = {'gcc-runtime': 'linux', 'msvc-runtime': 'win32'}
+# libquadmath: only numpy's manylinux wheel vendors it (macOS numpy uses
+# Accelerate, and the Windows OpenBLAS has no quadmath).
+_PLATFORM_ONLY = {'gcc-runtime': 'linux', 'libquadmath': 'linux', 'msvc-runtime': 'win32'}
 
 _LICENSE_NAME = re.compile(r'^(LICEN[CS]E|COPYING|NOTICE|AUTHORS)', re.I)
 
@@ -267,6 +275,11 @@ def main(argv: list[str] | None = None) -> int:
     for component in sorted({f.split('/', 1)[0] for f in static}):
         names = sorted(f.split('/', 1)[1] for f in static if f.startswith(component + '/'))
         lines.append(f'- **{component}** — {", ".join(names)}')
+    if any(f.startswith('libquadmath/') for f in static):
+        lines += ['', 'libquadmath is LGPL-2.1-or-later. Its complete source is attached to the',
+                  'same GitHub release as this archive, as',
+                  '`whispercpp-addon-<version>-libquadmath-source.tar.gz`',
+                  '(see libquadmath/SOURCE.txt).']
     lines.append('')
     (out / 'README.md').write_text('\n'.join(lines), encoding='utf-8')
 
@@ -276,7 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                 r'^python-[^/]+/LICENSE\.txt$', r'^python-runtime-libs/openssl-LICENSE\.txt$',
                 r'^README\.md$']
     if _platform_key() == 'linux':
-        required += [r'^gcc-runtime/COPYING3$', r'^gcc-runtime/COPYING\.RUNTIME$']
+        required += [r'^gcc-runtime/COPYING3$', r'^gcc-runtime/COPYING\.RUNTIME$',
+                     r'^libquadmath/COPYING\.LIB$', r'^libquadmath/SOURCE\.txt$']
     if _platform_key() == 'win32':
         required += [r'^msvc-runtime/NOTICE\.txt$']
     missing = [r for r in required if not any(re.match(r, p) for p in present)]

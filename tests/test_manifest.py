@@ -11,6 +11,7 @@ some add-on shipped a manifest that silently disagreed with its code.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import sys
@@ -30,6 +31,19 @@ SOURCE = (REPO_ROOT / 'whispercpp_addon' / '__main__.py').read_text(encoding='ut
 PYPROJECT = (REPO_ROOT / 'pyproject.toml').read_text(encoding='utf-8')
 WORKFLOW = (REPO_ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
 SPEC = (REPO_ROOT / 'pyinstaller.spec').read_text(encoding='utf-8')
+HARVESTER = (REPO_ROOT / 'tools' / 'fetch_third_party_licenses.py').read_text(encoding='utf-8')
+README = (REPO_ROOT / 'README.md').read_text(encoding='utf-8')
+LICENCES = REPO_ROOT / 'THIRD_PARTY_LICENSES'
+
+
+def _load_tool(name):
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / 'tools' / f'{name}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+QUADMATH_TOOL = _load_tool('build_libquadmath_source')
 
 
 def test_identity_is_the_former_builtin():
@@ -166,17 +180,62 @@ def test_license_is_apache():
 
 
 def test_static_third_party_licences_are_present():
-    root = REPO_ROOT / 'THIRD_PARTY_LICENSES'
+    root = LICENCES
     for rel in ('whisper.cpp/LICENSE', 'openai-whisper/LICENSE',
                 'gcc-runtime/COPYING3', 'gcc-runtime/COPYING.RUNTIME',
+                'libquadmath/COPYING.LIB', 'libquadmath/SOURCE.txt',
                 'pybind11/LICENSE', 'pybind11/SOURCE.txt',
                 'msvc-runtime/NOTICE.txt', 'python-runtime-libs/NOTICE.txt',
                 'python-runtime-libs/openssl-LICENSE.txt'):
         assert (root / rel).is_file(), rel
     assert 'MIT License' in (root / 'whisper.cpp' / 'LICENSE').read_text(encoding='utf-8')
+    lgpl = (root / 'libquadmath' / 'COPYING.LIB').read_text(encoding='utf-8')
+    assert 'GNU LESSER GENERAL PUBLIC LICENSE' in lgpl and 'Version 2.1, February 1999' in lgpl
     pybind11 = (root / 'pybind11' / 'LICENSE').read_text(encoding='utf-8')
     assert 'Copyright (c) 2016 Wenzel Jakob' in pybind11
     assert 'Redistributions in binary form must reproduce' in pybind11
+
+
+def test_libquadmath_is_not_labelled_gpl_with_the_runtime_exception():
+    """libquadmath is LGPL-2.1; the GCC Runtime Library Exception covers
+    libgcc/libstdc++/libgomp/libgfortran, not it."""
+    gcc = (LICENCES / 'gcc-runtime' / 'SOURCE.txt').read_text(encoding='utf-8')
+    for line in gcc.splitlines():
+        if line.lstrip().startswith('*'):
+            assert 'libquadmath' not in line, line
+    assert 'LGPL' in gcc and '../libquadmath/' in gcc
+
+
+def test_libquadmath_notice_matches_the_source_the_release_attaches():
+    notice = (LICENCES / 'libquadmath' / 'SOURCE.txt').read_text(encoding='utf-8')
+    tool = QUADMATH_TOOL
+    for value in (tool.LIBQUADMATH_BUILD_ID, tool.LIBQUADMATH_SHA256, tool.SRPM_NAME,
+                  tool.SRPM_SHA256, tool.SRPM_URLS[0], tool.GCC_TREE,
+                  f'libquadmath-{tool.RPM_RELEASE}', 'LGPL-2.1-or-later',
+                  'whispercpp-addon-<version>-libquadmath-source.tar.gz'):
+        assert value in notice, value
+    assert MANIFEST['homepage'] + '/releases' in notice
+
+
+def test_every_platform_specific_licence_is_gated_and_required():
+    only = re.search(r'_PLATFORM_ONLY = (\{[^}]*\})', HARVESTER).group(1)
+    assert "'libquadmath': 'linux'" in only
+    assert "'gcc-runtime': 'linux'" in only
+    for pattern in (r"r'^pybind11/LICENSE$'", r"r'^libquadmath/COPYING\.LIB$'",
+                    r"r'^libquadmath/SOURCE\.txt$'"):
+        assert pattern in HARVESTER, pattern
+    for needle in (r'THIRD_PARTY_LICENSES/pybind11/LICENSE',
+                   r'THIRD_PARTY_LICENSES/libquadmath/COPYING\.LIB',
+                   r'THIRD_PARTY_LICENSES/libquadmath/SOURCE\.txt'):
+        assert needle in WORKFLOW, needle
+
+
+def test_release_attaches_the_libquadmath_source_and_checks_the_bundle():
+    assert re.search(r'tools/build_libquadmath_source\.py [^\n]*--out', WORKFLOW)
+    assert 'tools/build_libquadmath_source.py --check-bundle' in WORKFLOW
+    assert 'libquadmath-source.tar.gz' in WORKFLOW
+    # The asset must not look like a platform zip to the catalog builder.
+    assert not re.search(r'libquadmath-source[^\s]*\.zip', WORKFLOW)
 
 
 def test_frozen_download_step_hides_the_runner_certificates():
@@ -190,3 +249,27 @@ def test_frozen_download_step_hides_the_runner_certificates():
 def test_certifi_is_a_declared_runtime_dependency():
     assert re.search(r'^\s*"certifi[^"]*",', PYPROJECT, re.M)
     assert "'certifi'" in SPEC
+
+
+def test_the_libquadmath_numpy_ships_is_the_one_the_release_has_source_for():
+    """A numpy/OpenBLAS upgrade can swap libquadmath for another build; the
+    attached source would then no longer correspond. Caught here, before a
+    frozen build, wherever numpy vendors it (Linux)."""
+    try:
+        import numpy
+    except ImportError:
+        pytest.skip('numpy not installed')
+    libs = Path(numpy.__file__).resolve().parent.parent / 'numpy.libs'
+    found = sorted(libs.glob('libquadmath*.so*')) if libs.is_dir() else []
+    if sys.platform.startswith('linux'):
+        assert found, f'numpy no longer vendors libquadmath in {libs}: drop the LGPL notice?'
+    for path in found:
+        assert QUADMATH_TOOL.elf_build_id(path) == QUADMATH_TOOL.LIBQUADMATH_BUILD_ID, path
+
+
+def test_readme_does_not_overclaim_licence_coverage():
+    assert 'covers everything frozen' not in README
+    assert 'LGPL' in README and 'libquadmath' in README and 'pybind11' in README
+    body = WORKFLOW.split('body: |', 1)[1]
+    assert 'numpy and its OpenBLAS are BSD-3-Clause' not in body
+    assert 'libquadmath' in body and 'LGPL' in body

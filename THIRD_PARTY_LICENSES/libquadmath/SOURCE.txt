@@ -1,0 +1,40 @@
+libquadmath (GCC quad-precision math library) — Linux builds only
+Licence: LGPL-2.1-or-later (see COPYING.LIB, the text shipped in GCC 4.8.5's
+libquadmath/ directory)
+Upstream: https://gcc.gnu.org/
+
+What ships
+  bin/_internal/numpy.libs/libquadmath-96973f99-934c22de.so.0.0.0, and an
+  identical copy at bin/_internal/libquadmath-96973f99-934c22de.so.0.0.0
+  placed there by PyInstaller. numpy's manylinux wheel vendors it for
+  OpenBLAS (numpy -> libscipy_openblas64_ -> libgfortran -> libquadmath).
+  The file is the unmodified library from CentOS 7's package
+  libquadmath-4.8.5-44.el7.x86_64 (GCC 4.8.5 20150623, Red Hat 4.8.5-44),
+  the build image of the OpenBLAS wheel, with only its SONAME renamed by
+  auditwheel:
+    GNU build-id  549b4c82347785459571c79239872ad31509dcf4
+    sha256 of the package's /usr/lib64/libquadmath.so.0.0.0
+                  96973f995bad4e4b80eaa188b7bac60bd0df44b22ee67bd046b3aa4ecb9e34fd
+                  (the "96973f99" in the file name is its prefix)
+  The release build checks the build-id before publishing
+  (tools/build_libquadmath_source.py --check-bundle).
+
+Source code
+  The complete corresponding source is attached to the same GitHub release
+  as this archive, at no charge:
+    whispercpp-addon-<version>-libquadmath-source.tar.gz
+    https://github.com/Subtitld/addon-whispercpp/releases
+  It holds libquadmath/ and the build scripts from the exact GCC tree Red Hat
+  built (gcc-4.8.5-20150702), plus Red Hat's gcc.spec and patches, taken from
+  the source package
+    gcc-4.8.5-44.el7.src.rpm
+    https://vault.centos.org/7.9.2009/os/Source/SPackages/gcc-4.8.5-44.el7.src.rpm
+    sha256 642c4085f6af9565e39583e54a9d7a5d9e6b93dd8c8e9474aec8a892d6c7aa36
+  None of those patches changes libquadmath/. The upstream release is
+  https://ftp.gnu.org/gnu/gcc/gcc-4.8.5/.
+
+Replacing it
+  It is a separate shared library loaded at run time. You may replace
+  bin/_internal/numpy.libs/libquadmath-96973f99-934c22de.so.0.0.0 (and the
+  copy beside it) with any ABI-compatible libquadmath.so.0 build, including
+  one you built from the source above.

@@ -159,6 +159,7 @@ WHISPERCPP_TEST_BINARY="$PWD/dist/whispercpp-addon/whispercpp-addon" \
 Package it the way CI does:
 
 ```bash
+python tools/build_libquadmath_source.py --check-bundle dist/whispercpp-addon
 python tools/fetch_third_party_licenses.py --out release-staging/THIRD_PARTY_LICENSES
 mkdir -p release-staging/bin && cp -R dist/whispercpp-addon/. release-staging/bin/
 cp manifest.json LICENSE README.md release-staging/
@@ -177,14 +178,26 @@ transcription, not at build time.
    `whispercpp_addon/__main__.py`. A test fails if they disagree.
 2. Push a `v<version>` tag. `.github/workflows/release.yml` runs the tests,
    builds and tests all three platforms, checks each archive's contents, and
-   publishes the zips with `.sha256` sidecars and a source tarball. The job
-   refuses to publish if the tag doesn't match `manifest.json` or a platform
-   is missing.
+   publishes the zips with `.sha256` sidecars, a source tarball and the
+   libquadmath source tarball (see Licence). The job refuses to publish if
+   the tag doesn't match `manifest.json` or a platform or source is missing.
 
 ## Licence
 
 The add-on code is Apache-2.0 (see [LICENSE](LICENSE)). whisper.cpp and
 pywhispercpp are MIT; pybind11, compiled into pywhispercpp's extension, is
-BSD-3-Clause. Release archives include `THIRD_PARTY_LICENSES/`, which
-covers everything frozen into the binary: numpy with OpenBLAS, pybind11, the
-Python runtime, the GCC runtime on Linux and the MSVC runtime on Windows.
+BSD-3-Clause. Release archives include `THIRD_PARTY_LICENSES/` with the
+licence texts and notices of the third-party components frozen into the
+binary: the Python distributions (numpy with OpenBLAS, requests, tqdm,
+certifi, ...), the Python runtime and its native libraries, the PyInstaller
+bootloader, the GCC runtime on Linux and the MSVC runtime on Windows.
+`tools/fetch_third_party_licenses.py` assembles it and fails the build when a
+required notice is missing.
+
+The Linux archive also contains **libquadmath**, which numpy's OpenBLAS
+needs. It is licensed under the **LGPL-2.1-or-later**
+(`THIRD_PARTY_LICENSES/libquadmath/`). It is CentOS 7's unmodified GCC 4.8.5
+build, and its complete source is attached to every GitHub release as
+`whispercpp-addon-<version>-libquadmath-source.tar.gz`
+(`tools/build_libquadmath_source.py`). The build refuses to publish when the
+bundled copy is a different build.

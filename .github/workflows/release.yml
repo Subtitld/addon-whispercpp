@@ -13,6 +13,9 @@ name: Release
 # installs it, therefore runs the subprocess test suite, including a real
 # transcription with ggml-tiny.bin downloaded through it, before anything is
 # published.
+#
+# The Linux zip ships LGPL-2.1 libquadmath (numpy's OpenBLAS), so the source
+# job also attaches that library's source to the release.
 
 on:
   push:
@@ -116,6 +119,13 @@ jobs:
       - name: Build bundle
         shell: bash
         run: pyinstaller pyinstaller.spec --noconfirm
+
+      # The release attaches the source of one exact libquadmath build. If a
+      # numpy/OpenBLAS upgrade bundled a different one, that source would no
+      # longer correspond: stop here instead.
+      - name: Check bundled LGPL libraries against the attached source
+        shell: bash
+        run: python tools/build_libquadmath_source.py --check-bundle dist/whispercpp-addon
 
       - name: Assemble third-party licences
         shell: bash
@@ -260,6 +270,8 @@ jobs:
                   'libggml-cpu': r'^bin/_internal/pywhispercpp\.libs/libggml-cpu-[^/]+\.so',
                   'libgomp': r'^bin/_internal/pywhispercpp\.libs/libgomp-[^/]+\.so',
                   'GCC runtime licence': r'^THIRD_PARTY_LICENSES/gcc-runtime/COPYING\.RUNTIME$',
+                  'libquadmath LGPL text': r'^THIRD_PARTY_LICENSES/libquadmath/COPYING\.LIB$',
+                  'libquadmath notice': r'^THIRD_PARTY_LICENSES/libquadmath/SOURCE\.txt$',
               })
           elif platform == 'macos':
               patterns.update({
@@ -274,6 +286,10 @@ jobs:
                   'msvcp140.dll': r'^bin/_internal/msvcp140-[^/]+\.dll$',
                   'MSVC notice': r'^THIRD_PARTY_LICENSES/msvc-runtime/NOTICE\.txt$',
               })
+          # Whatever the platform: LGPL libquadmath never ships without its licence.
+          if any(re.search(r'(^|/)libquadmath[^/]*\.so', n) for n in names):
+              patterns['libquadmath LGPL text (bundled here)'] = (
+                  r'^THIRD_PARTY_LICENSES/libquadmath/COPYING\.LIB$')
           for label, pattern in patterns.items():
               if not any(re.search(pattern, n) for n in names):
                   problems.append(f'missing {label} ({pattern})')
@@ -297,27 +313,45 @@ jobs:
           if-no-files-found: error
 
   source:
-    name: Source archive
+    name: Source archives
     needs: test
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Build source tarball
         shell: bash
         run: |
           set -euo pipefail
-          version=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          version=$(python -c "import json; print(json.load(open('manifest.json'))['version'])")
           out="whispercpp-addon-${version}-source.tar.gz"
           git archive --format=tar.gz --prefix="addon-whispercpp-${version}/" -o "$out" HEAD
-          python3 -c "import hashlib,sys;p=sys.argv[1];print(hashlib.sha256(open(p,'rb').read()).hexdigest())" "$out" > "$out.sha256"
+          python -c "import hashlib,sys;p=sys.argv[1];print(hashlib.sha256(open(p,'rb').read()).hexdigest())" "$out" > "$out.sha256"
           ls -lah "$out"
           echo "SOURCE_NAME=$out" >> "$GITHUB_ENV"
+      # LGPL-2.1 §4: the Linux zip's libquadmath comes with its complete
+      # source from the same place. The tool pins the exact Red Hat source
+      # package (sha256) that build came from.
+      - name: Build libquadmath source tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python -c "import json; print(json.load(open('manifest.json'))['version'])")
+          out="whispercpp-addon-${version}-libquadmath-source.tar.gz"
+          python tools/build_libquadmath_source.py --version "$version" --out "$out"
+          python -c "import hashlib,sys;p=sys.argv[1];print(hashlib.sha256(open(p,'rb').read()).hexdigest())" "$out" > "$out.sha256"
+          ls -lah "$out"
+          echo "LIBQUADMATH_SOURCE_NAME=$out" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: source
           path: |
             ${{ env.SOURCE_NAME }}
             ${{ env.SOURCE_NAME }}.sha256
+            ${{ env.LIBQUADMATH_SOURCE_NAME }}
+            ${{ env.LIBQUADMATH_SOURCE_NAME }}.sha256
           if-no-files-found: error
 
   release:
@@ -348,6 +382,9 @@ jobs:
             test -f "release-files/whispercpp-${version}-${label}.zip"
             test -f "release-files/whispercpp-${version}-${label}.zip.sha256"
           done
+          # LGPL-2.1 §4: no Linux zip without libquadmath's source beside it.
+          test -f "release-files/whispercpp-addon-${version}-libquadmath-source.tar.gz"
+          test -f "release-files/whispercpp-addon-${version}-source.tar.gz"
       - uses: softprops/action-gh-release@v2
         with:
           files: release-files/*
@@ -361,5 +398,14 @@ jobs:
             Subtitld versions are reused.
 
             The add-on is Apache-2.0. Each archive contains `THIRD_PARTY_LICENSES/`
-            with the licences of everything frozen into it (whisper.cpp and
-            pywhispercpp are MIT; numpy and its OpenBLAS are BSD-3-Clause).
+            with the licences of the third-party components frozen into it:
+            whisper.cpp and pywhispercpp are MIT, pybind11 and numpy are
+            BSD-3-Clause, and the Python runtime and its libraries are under their
+            own permissive licences.
+
+            The Linux archive also ships, inside numpy's OpenBLAS, the GCC Fortran
+            runtime (GPL-3.0 with the GCC Runtime Library Exception) and
+            libquadmath (LGPL-2.1-or-later). The complete source of that
+            libquadmath build is attached here as
+            `whispercpp-addon-<version>-libquadmath-source.tar.gz`; the add-on's own
+            source is `whispercpp-addon-<version>-source.tar.gz`.

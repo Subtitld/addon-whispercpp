@@ -8,8 +8,12 @@ Upstream: https://gcc.gnu.org/
     for its CPU thread pool.
   * libstdc++ and libgcc_s — copied from the build machine by PyInstaller,
     because the whisper.cpp libraries are C++.
-  * libgfortran and libquadmath — shipped inside numpy.libs by the numpy wheel
-    for OpenBLAS; numpy's own LICENSE.txt (../numpy-*/) lists them as well.
+  * libgfortran — shipped inside numpy.libs by the numpy wheel for OpenBLAS
+    (CentOS 7's libgfortran5-8.3.1-2.1.1.el7, i.e. GCC 8.3.1); numpy's own
+    LICENSE.txt (../numpy-*/) lists it as well.
+
+libquadmath, which numpy.libs also ships, is NOT covered here: it is LGPL,
+see ../libquadmath/.
 
 The GCC Runtime Library Exception permits propagating these runtime libraries
 with independent code under terms of your choice when they were combined
