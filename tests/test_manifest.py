@@ -273,3 +273,18 @@ def test_readme_does_not_overclaim_licence_coverage():
     body = WORKFLOW.split('body: |', 1)[1]
     assert 'numpy and its OpenBLAS are BSD-3-Clause' not in body
     assert 'libquadmath' in body and 'LGPL' in body
+
+
+def test_libquadmath_tarball_keeps_what_its_sources_include():
+    """The attached source must build: printf/gmp-impl.h includes
+    ../../libgcc/longlong.h, whose macros are compiled into the library."""
+    tool = QUADMATH_TOOL
+    assert tool._keep_member('libgcc/longlong.h', False)
+    kept = {'libquadmath/printf/gmp-impl.h', 'libgcc/longlong.h', 'libquadmath/quadmath.h'}
+    sources = {
+        'libquadmath/printf/gmp-impl.h': b'#include "../../libgcc/longlong.h"\n#include <stdlib.h>\n',
+        'libquadmath/printf/mul_1.c': b'#  include "../quadmath.h"\n#include "gmp-impl.h"\n',
+    }
+    assert tool.missing_includes(sources, kept) == []
+    sources['libquadmath/math/x.c'] = b'#include "../../gcc/tm.h"\n'
+    assert tool.missing_includes(sources, kept) == ['libquadmath/math/x.c -> gcc/tm.h']

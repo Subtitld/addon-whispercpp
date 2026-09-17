@@ -24,8 +24,9 @@ Source code
   as this archive, at no charge:
     whispercpp-addon-<version>-libquadmath-source.tar.gz
     https://github.com/Subtitld/addon-whispercpp/releases
-  It holds libquadmath/ and the build scripts from the exact GCC tree Red Hat
-  built (gcc-4.8.5-20150702), plus Red Hat's gcc.spec and patches, taken from
+  It holds libquadmath/, the libgcc header it includes and the build scripts
+  from the exact GCC tree Red Hat built (gcc-4.8.5-20150702), with steps to
+  rebuild the library from it, plus Red Hat's gcc.spec and patches, taken from
   the source package
     gcc-4.8.5-44.el7.src.rpm
     https://vault.centos.org/7.9.2009/os/Source/SPackages/gcc-4.8.5-44.el7.src.rpm

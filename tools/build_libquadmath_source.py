@@ -38,6 +38,7 @@ import io
 import json
 import lzma
 import os
+import posixpath
 import re
 import shutil
 import struct
@@ -65,9 +66,13 @@ BINARY_RPM_URL = ('https://vault.centos.org/7.9.2009/os/x86_64/Packages/'
 # Inside GCC_TREE: what building libquadmath reads besides libquadmath/
 # (its configure sources ../config-ml.in, ../ltmain.sh, ../config/*.m4;
 # its Makefile reads ../gcc/BASE-VER, ../contrib/make_sunver.pl and the
-# texinfo includes).
+# texinfo includes; printf/gmp-impl.h includes ../../libgcc/longlong.h,
+# whose macros are compiled into the library). build() refuses to write a
+# tarball in which any kept source includes a `../` file left out.
 _KEEP_DIRS = ('libquadmath/', 'config/', 'gcc/doc/include/')
-_KEEP_FILES = ('gcc/BASE-VER', 'gcc/DATESTAMP', 'gcc/DEV-PHASE', 'contrib/make_sunver.pl')
+_KEEP_FILES = ('gcc/BASE-VER', 'gcc/DATESTAMP', 'gcc/DEV-PHASE', 'contrib/make_sunver.pl',
+               'libgcc/longlong.h')
+_INCLUDE_RE = re.compile(rb'^\s*#\s*include\s+"(\.\./[^"]+)"', re.M)
 
 
 def _log(msg: str) -> None:
@@ -231,6 +236,18 @@ def _keep_member(rel: str, is_dir: bool) -> bool:
     return rel.startswith(_KEEP_DIRS) or rel in _KEEP_FILES
 
 
+def missing_includes(sources: dict[str, bytes], kept: set[str]) -> list[str]:
+    """`from -> to` for every `#include "../..."` in `sources` (tree-relative
+    path -> content) that resolves to a file not in `kept`."""
+    missing = []
+    for rel, data in sorted(sources.items()):
+        for target in _INCLUDE_RE.findall(data):
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), target.decode()))
+            if resolved not in kept:
+                missing.append(f'{rel} -> {resolved}')
+    return missing
+
+
 def _add_bytes(tar: tarfile.TarFile, name: str, data: bytes, mtime: int) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(data)
@@ -259,6 +276,8 @@ def build(out: Path, srpm: Path | None, version: str) -> int:
 
         out.parent.mkdir(parents=True, exist_ok=True)
         kept = 0
+        kept_names: set[str] = set()
+        quadmath_sources: dict[str, bytes] = {}
         with open(out, 'wb') as raw, \
                 gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as gz, \
                 tarfile.open(fileobj=gz, mode='w', format=tarfile.PAX_FORMAT) as tar, \
@@ -274,8 +293,15 @@ def build(out: Path, srpm: Path | None, version: str) -> int:
                     continue  # none in these directories; never follow one out of the tree
                 member.uid = member.gid = 0
                 member.uname = member.gname = ''
-                tar.addfile(member, src.extractfile(member) if member.isfile() else None)
-                kept += member.isfile()
+                if member.isfile():
+                    data = src.extractfile(member).read()
+                    kept_names.add(rel)
+                    if rel.startswith('libquadmath/') and rel.endswith(('.c', '.h')):
+                        quadmath_sources[rel] = data
+                    tar.addfile(member, io.BytesIO(data))
+                    kept += 1
+                else:
+                    tar.addfile(member)
             for name in ['gcc.spec'] + patches:
                 sub = 'redhat' if name == 'gcc.spec' else 'redhat/patches'
                 _add_bytes(tar, f'{prefix}/{sub}/{name}', (work / name).read_bytes(), mtime)
@@ -287,6 +313,12 @@ def build(out: Path, srpm: Path | None, version: str) -> int:
                 touching=', '.join(touching) if touching else 'none of them',
                 kept=kept)
             _add_bytes(tar, f'{prefix}/README.md', readme.encode('utf-8'), mtime)
+        missing = missing_includes(quadmath_sources, kept_names)
+        if missing:
+            out.unlink()
+            raise SystemExit('FATAL: the tarball would not build libquadmath; these includes '
+                             'point at files left out (add them to _KEEP_FILES):\n  '
+                             + '\n  '.join(missing))
     _log(f'wrote {out} ({out.stat().st_size / 2**20:.1f} MiB, {kept} files from {GCC_TREE}, '
          f'{len(patches)} patches; patches touching libquadmath/: {touching or "none"})')
     return 0
@@ -321,6 +353,7 @@ differs.
 |---|---|
 | `{tree}/libquadmath/` | the library's source |
 | `{tree}/*`, `config/`, `gcc/BASE-VER` ..., `contrib/make_sunver.pl`, `gcc/doc/include/` | the GCC build machinery that configures and builds it |
+| `{tree}/libgcc/longlong.h` | a header the library's printf code includes |
 | `redhat/gcc.spec` | Red Hat's build recipe (see `%build`; libquadmath is built as a GCC target library) |
 | `redhat/patches/` | all {patch_count} patches of the source package; {touching} touch `libquadmath/` |
 
@@ -336,11 +369,18 @@ https://ftp.gnu.org/gnu/gcc/gcc-4.8.5/.
 
 ## Rebuilding
 
-libquadmath is built as part of a GCC build: unpack `{tree}`, apply the
-patches as `redhat/gcc.spec`'s `%prep` does, configure with the options in
-its `%build` section, and build the `all-target-libquadmath` target. The
-result replaces the shipped file (keep the SONAME the loader expects, or
-rename the file to the shipped name).
+None of Red Hat's patches change the files kept here, so nothing needs
+applying. libquadmath configures and builds on its own, out of tree, with
+the system C compiler:
+
+    mkdir build && cd build
+    ../{tree}/libquadmath/configure --disable-multilib
+    make
+
+The library is `build/.libs/libquadmath.so.0.0.0`; copy it over the shipped
+file (keeping the shipped file name). Red Hat built it as a target library
+of a full GCC build (`redhat/gcc.spec`, `%build`); for that, use the whole
+source package above.
 """
 
 
