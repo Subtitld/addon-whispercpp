@@ -79,7 +79,7 @@ jobs:
             exe_suffix: ''
           # pywhispercpp 1.5.1 publishes arm64 macOS wheels only, and the
           # catalog cannot tell Mac architectures apart: ship arm64.
-          - os: macos-14
+          - os: macos-15
             platform_label: macos-arm64
             exe_suffix: ''
           - os: windows-2022
