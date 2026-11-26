@@ -166,7 +166,9 @@ def test_executable_matches_the_spec_and_the_staging_layout():
 def test_every_advertised_platform_is_built_and_tested():
     labels = set(re.findall(r'platform_label:\s*(\S+)', WORKFLOW))
     built = {label.split('-')[0] for label in labels}
-    assert set(MANIFEST['platforms']) == built, (MANIFEST['platforms'], labels)
+    # Haiku's zip is built on Haiku (tools/build_haiku.py), not by CI.
+    assert set(MANIFEST['platforms']) - {'haiku'} == built, (MANIFEST['platforms'], labels)
+    assert (REPO_ROOT / 'tools' / 'build_haiku.py').is_file()
     # ...and the frozen binary is exercised by a real transcription.
     assert 'WHISPERCPP_TEST_BINARY' in WORKFLOW
     assert 'WHISPERCPP_TEST_TRANSCRIPTION' in WORKFLOW
