@@ -182,6 +182,15 @@ transcription, not at build time.
    libquadmath source tarball (see Licence). The job refuses to publish if
    the tag doesn't match `manifest.json` or a platform or source is missing.
 
+## Haiku
+
+PyPI has no pywhispercpp wheel for Haiku, so tools/build_native_haiku.py builds its extension there, with whisper.cpp linked in, and the Haiku archive is built on a Haiku machine and added to a release by hand. Haiku has no PyInstaller: the add-on runs on HaikuPorts' Python 3.14, with numpy, requests and platformdirs from Haiku packages.
+
+```bash
+python3.14 tools/build_native_haiku.py
+python3.14 tools/build_haiku.py
+```
+
 ## Licence
 
 The add-on code is Apache-2.0 (see [LICENSE](LICENSE)). whisper.cpp and
