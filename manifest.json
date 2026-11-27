@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "id": "whispercpp",
-  "version": "0.0.1",
+  "version": "26.11.1",
   "display_name": "Whisper (offline)",
   "summary": "Offline speech-to-text with whisper.cpp. CPU only, no torch. The chosen GGML model downloads once on first use (base ~142 MB, large-v3 ~2.9 GB) into Subtitld's shared model cache, so models downloaded by earlier Subtitld versions are reused.",
   "author": "Subtitld",

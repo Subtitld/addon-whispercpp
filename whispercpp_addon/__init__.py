@@ -8,7 +8,7 @@ The package exists so the entry point can run both from source
 (`bin/whispercpp-addon`).
 """
 
-__version__ = '0.0.1'
+__version__ = '26.11.1'
 # Kept from the former built-in provider on purpose: existing users' config
 # (`addons.options.whispercpp`) and their downloaded models are keyed by it,
 # and the host derives the `WHISPERCPP_*` env prefix from it.
