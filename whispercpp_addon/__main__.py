@@ -146,7 +146,7 @@ else:
     _IMPORT_ERROR = None
 
 ADDON_ID = 'whispercpp'
-ADDON_VERSION = '0.0.1'
+ADDON_VERSION = '26.11.1'
 PROTOCOL_VERSION = 1
 
 # Error codes. Mirrors `subtitld.modules.addons.protocol.ErrorCode`; inlined so
